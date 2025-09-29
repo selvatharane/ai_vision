@@ -7,9 +7,9 @@ from PIL import Image
 import cv2
 
 # ================================
-# 1. Load Model Once (at Startup)
+# 1. Load Model Once
 # ================================
-@st.cache_resource  # cache so model loads only once
+@st.cache_resource
 def load_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = smp.DeepLabV3Plus(
@@ -51,7 +51,6 @@ def predict_with_tta(model, input_tensor):
         with torch.no_grad():
             out = model(t)
             out = torch.sigmoid(out)
-            # undo transforms
             if f != aug_list[0]:
                 if f == aug_list[1]: out = torch.flip(out, [3])
                 elif f == aug_list[2]: out = torch.flip(out, [2])
@@ -63,7 +62,7 @@ def predict_with_tta(model, input_tensor):
 # ================================
 # 4. Post-processing
 # ================================
-def postprocess_mask(mask_tensor):
+def postprocess_mask(mask_tensor, orig_size):
     mask = mask_tensor.squeeze().cpu().detach().numpy()
     mask = (mask * 255).astype(np.uint8)
     _, mask = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -71,29 +70,48 @@ def postprocess_mask(mask_tensor):
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     mask = cv2.dilate(mask, kernel, iterations=1)
+    mask = cv2.resize(mask, orig_size)
     return mask
 
 # ================================
 # 5. Streamlit UI
 # ================================
-st.title("✈️ Flight Object Segmentation")
-st.write("Upload an image, and we'll extract the flight object using DeepLabV3+ with TTA + Post-processing.")
+st.set_page_config(
+    page_title="AI Vision Extraction",
+    page_icon="🖥️",
+    layout="wide"
+)
 
-uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+st.title("🖥️ AI Vision Object Extraction")
+st.markdown(
+    "Upload an image, and the app will automatically extract objects using **DeepLabV3+** with **TTA & post-processing**."
+)
 
-if uploaded_file is not None:
+# Upload
+uploaded_file = st.file_uploader("Upload an image (jpg/png)", type=["jpg", "jpeg", "png"])
+
+if uploaded_file:
     img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_column_width=True)
+    orig_size = img.size
+    st.image(img, caption="Original Image", use_column_width=True)
 
-    with st.spinner("Running model..."):
+    with st.spinner("Processing..."):
         input_tensor = preprocess_image(img).to(device)
         mask_tensor = predict_with_tta(model, input_tensor)
-        mask_np = postprocess_mask(mask_tensor)
+        mask_np = postprocess_mask(mask_tensor, orig_size)
 
-        # Overlay result
-        overlay = np.array(img.resize((256, 256)))
-        overlay[mask_np == 0] = [0, 0, 0]
+        # Overlay
+        overlay = np.array(img)
+        overlay[mask_np == 0] = 0
 
     st.success("✅ Extraction complete!")
-    st.image(mask_np, caption="Mask", use_column_width=True, channels="GRAY")
-    st.image(overlay, caption="Extracted Object", use_column_width=True)
+
+    # Attractive visualization with two columns
+    col1, col2, col3 = st.columns(3)
+    col1.image(img, caption="Original Image", use_column_width=True)
+    col2.image(mask_np, caption="Segmentation Mask", use_column_width=True)
+    col3.image(overlay, caption="Extracted Objects", use_column_width=True)
+
+# Optional footer
+st.markdown("---")
+st.markdown("Built with 💡 **DeepLabV3+**, **PyTorch**, and **Streamlit**")
