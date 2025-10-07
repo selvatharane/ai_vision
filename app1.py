@@ -369,33 +369,21 @@ img:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# ================= Load Model =================
-@st.cache_resource
-def load_model(model_path="best_deeplab.pth", num_classes=2):
-    import os
-    if not os.path.exists(model_path):
-        st.error(f"Model file not found: {model_path}")
-        return None
-
-    # Create DeepLabV3 model
-    model = smp.DeepLabV3(
-        encoder_name="resnet34",
-        encoder_weights=None,  # or "imagenet" for pretrained encoder
+# ================== Load Model ==================
+@st.cache_resource  # cache so it doesn't reload every run
+def load_model(model_path="best_deeplab.pth"):
+    model = smp.DeepLabV3Plus(
+        encoder_name="resnet34",        # backbone
+        encoder_weights=None,           # use None if you trained your own model
         in_channels=3,
-        classes=num_classes,
-        aux_params=None      # Ensures no auxiliary outputs
+        classes=1                       # 1 class for segmentation mask
     )
-
-    # Load checkpoint
-    checkpoint = torch.load(model_path, map_location=device)
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["state_dict"])
-    else:
-        model.load_state_dict(checkpoint)
-
-    model.to(device)
+    model.load_state_dict(torch.load(model_path, map_location="cpu"))
     model.eval()
     return model
+
+model = load_model("best_deeplab.pth")  # make sure your .pth file is in the same folder
+
 
 # ================= Artistic Effects Functions =================
 def apply_sketch_effect(img, intensity=1.0):
