@@ -369,21 +369,20 @@ img:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# ================== Load Model ==================
-@st.cache_resource  # cache so it doesn't reload every run
-def load_model(model_path="best_deeplab.pth"):
+# ================== Model Loading ==================
+@st.cache_resource
+def load_model():
     model = smp.DeepLabV3Plus(
-        encoder_name="resnet34",        # backbone
-        encoder_weights=None,           # use None if you trained your own model
+        encoder_name="resnet34",
+        encoder_weights=None,
         in_channels=3,
-        classes=1                       # 1 class for segmentation mask
+        classes=1
     )
-    model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    model.load_state_dict(torch.load("best_deeplab.pth", map_location="cpu"))
     model.eval()
     return model
 
-model = load_model("best_deeplab.pth")  # make sure your .pth file is in the same folder
-
+model = load_model()
 
 # ================= Artistic Effects Functions =================
 def apply_sketch_effect(img, intensity=1.0):
@@ -540,40 +539,15 @@ def preprocess_image(img, long_side=256):
     img_tensor = (img_tensor - mean) / std
     return img_tensor.to(device), (h, w), img
 
-# ================= TTA Prediction =================
-def tta_predict(img_tensor):
-    """
-    Test-Time Augmentation (TTA) prediction for DeepLabV3.
-    Applies flips and rotations to improve segmentation quality.
-    """
-    aug_list = [
-        lambda x: x,                         # original
-        lambda x: torch.flip(x, [3]),        # horizontal flip
-        lambda x: torch.flip(x, [2]),        # vertical flip
-        lambda x: torch.rot90(x, k=1, dims=[2,3]),  # rotate 90
-        lambda x: torch.rot90(x, k=3, dims=[2,3])   # rotate 270
-    ]
-
-    outputs = []
+# ================== TTA Function ==================
+def tta_predict(img_tensor, model):
     with torch.no_grad():
-        for i, f in enumerate(aug_list):
-            t = f(img_tensor)
-            out = model(t)  # DeepLabV3 output is already a tensor
-            
-            # Reverse augmentation
-            if i == 1:       # horizontal flip
-                out = torch.flip(out, [3])
-            elif i == 2:     # vertical flip
-                out = torch.flip(out, [2])
-            elif i == 3:     # rotate 90
-                out = torch.rot90(out, k=3, dims=[2,3])
-            elif i == 4:     # rotate 270
-                out = torch.rot90(out, k=1, dims=[2,3])
-            
-            outputs.append(out)
+        pred1 = model(img_tensor)['out']
+        pred2 = model(torch.flip(img_tensor, dims=[3]))['out']
+        pred2 = torch.flip(pred2, dims=[3])
+        pred = (pred1 + pred2) / 2
+    return pred
 
-    # Average predictions
-    return torch.mean(torch.stack(outputs), dim=0)
 
 
 # ================= Post-process mask =================
