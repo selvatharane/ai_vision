@@ -555,31 +555,38 @@ def preprocess_image(img, long_side=256):
 # ================= TTA Prediction =================
 def tta_predict(img_tensor):
     """
-    Test-Time Augmentation prediction
+    Test-Time Augmentation (TTA) prediction for DeepLabV3.
+    Applies flips and rotations to improve segmentation quality.
     """
     aug_list = [
-        lambda x: x,
-        lambda x: torch.flip(x, [3]),
-        lambda x: torch.flip(x, [2]),
-        lambda x: torch.rot90(x, k=1, dims=[2,3]),
-        lambda x: torch.rot90(x, k=3, dims=[2,3])
+        lambda x: x,                         # original
+        lambda x: torch.flip(x, [3]),        # horizontal flip
+        lambda x: torch.flip(x, [2]),        # vertical flip
+        lambda x: torch.rot90(x, k=1, dims=[2,3]),  # rotate 90
+        lambda x: torch.rot90(x, k=3, dims=[2,3])   # rotate 270
     ]
+
     outputs = []
     with torch.no_grad():
-        for f in aug_list:
+        for i, f in enumerate(aug_list):
             t = f(img_tensor)
-            out = model(t)
-            # Handle SMP DeepLabV3 output
-            if isinstance(out, dict):
-                out = out.get('out', out[list(out.keys())[0]])
+            out = model(t)  # DeepLabV3 output is already a tensor
+            
             # Reverse augmentation
-            if f != aug_list[0]:
-                if f == aug_list[1]: out = torch.flip(out,[3])
-                elif f == aug_list[2]: out = torch.flip(out,[2])
-                elif f == aug_list[3]: out = torch.rot90(out,k=3,dims=[2,3])
-                elif f == aug_list[4]: out = torch.rot90(out,k=1,dims=[2,3])
+            if i == 1:       # horizontal flip
+                out = torch.flip(out, [3])
+            elif i == 2:     # vertical flip
+                out = torch.flip(out, [2])
+            elif i == 3:     # rotate 90
+                out = torch.rot90(out, k=3, dims=[2,3])
+            elif i == 4:     # rotate 270
+                out = torch.rot90(out, k=1, dims=[2,3])
+            
             outputs.append(out)
+
+    # Average predictions
     return torch.mean(torch.stack(outputs), dim=0)
+
 
 # ================= Post-process mask =================
 def postprocess_mask(mask_tensor, orig_size, blur_strength=5):
