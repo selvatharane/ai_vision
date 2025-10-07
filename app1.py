@@ -525,16 +525,36 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
             draw.line(contour_points, fill=edge_color_rgb, width=edge_thickness)
     
     return np.array(overlay_edges)
-# =================== Preprocess Image ===================
 def preprocess_image(img):
-    """Convert PIL image to tensor and resize to multiples of 32."""
+    """
+    Convert a PIL image to a PyTorch tensor and resize to multiples of 32.
+    
+    Returns:
+        img_tensor: torch.FloatTensor of shape [1, 3, H_new, W_new]
+        orig_size: tuple (original_width, original_height)
+        img_np: numpy array of the original image
+    """
+    if img is None:
+        raise ValueError("No image provided to preprocess_image()")
+    
+    # Ensure PIL Image
+    if not isinstance(img, Image.Image):
+        img = Image.fromarray(img)
+
     img_np = np.array(img.convert("RGB"))
     H, W = img_np.shape[:2]
-    H_new = (H // 32) * 32
-    W_new = (W // 32) * 32
+    
+    # Resize to multiples of 32
+    H_new = (H // 32) * 32 or 32
+    W_new = (W // 32) * 32 or 32
+    
     img_resized = cv2.resize(img_np, (W_new, H_new))
-    img_tensor = torch.tensor(img_resized.transpose(2,0,1)).unsqueeze(0).float()/255.0
-    return img_tensor, (W, H), img_np  # return original size for postprocessing
+    
+    # Convert to tensor [1, 3, H, W] and normalize
+    img_tensor = torch.tensor(img_resized.transpose(2,0,1)).unsqueeze(0).float() / 255.0
+    
+    return img_tensor, (W, H), img_np
+  # return original size for postprocessing
 
 # =================== TTA Predict ===================
 def tta_predict(img_tensor, model):
