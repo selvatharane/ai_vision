@@ -526,45 +526,30 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
     
     return np.array(overlay_edges)
 def preprocess_image(img):
-    """
-    Convert a PIL image to a PyTorch tensor and resize to multiples of 32.
-    
-    Returns:
-        img_tensor: torch.FloatTensor of shape [1, 3, H_new, W_new]
-        orig_size: tuple (original_width, original_height)
-        img_np: numpy array of the original image
-    """
-    if img is None:
-        raise ValueError("No image provided to preprocess_image()")
-    
-    # Ensure PIL Image
-    if not isinstance(img, Image.Image):
-        img = Image.fromarray(img)
-
+    """Convert PIL image to tensor and resize to multiples of 32."""
+    # Convert to RGB and NumPy array
     img_np = np.array(img.convert("RGB"))
     H, W = img_np.shape[:2]
-    
-    # Resize to multiples of 32
-    H_new = (H // 32) * 32 or 32
-    W_new = (W // 32) * 32 or 32
-    
-    img_resized = cv2.resize(img_np, (W_new, H_new))
-    
-    # Convert to tensor [1, 3, H, W] and normalize
-    img_tensor = torch.tensor(img_resized.transpose(2,0,1)).unsqueeze(0).float() / 255.0
-    
-    return img_tensor, (W, H), img_np
-  # return original size for postprocessing
 
-# =================== TTA Predict ===================
+    # Resize to multiples of 32 for model compatibility
+    H_new = (H // 32) * 32
+    W_new = (W // 32) * 32
+    img_resized = cv2.resize(img_np, (W_new, H_new))
+
+    # Convert to tensor
+    img_tensor = torch.tensor(img_resized.transpose(2, 0, 1)).unsqueeze(0).float() / 255.0
+    return img_tensor, (W, H), img_np  # original width and height kept for postprocessing
+
+
 def tta_predict(img_tensor, model):
-    """Simple horizontal flip TTA"""
+    """Simple horizontal flip Test-Time Augmentation (TTA)."""
     with torch.no_grad():
-        pred1 = model(img_tensor)['out']
-        pred2 = model(torch.flip(img_tensor, dims=[3]))['out']
-        pred2 = torch.flip(pred2, dims=[3])
-        pred = (pred1 + pred2) / 2
+        pred1 = model(img_tensor)['out']                     # normal prediction
+        pred2 = model(torch.flip(img_tensor, dims=[3]))['out']  # horizontally flipped
+        pred2 = torch.flip(pred2, dims=[3])                 # flip back
+        pred = (pred1 + pred2) / 2                          # average predictions
     return pred
+
 
 # =================== Postprocess Mask ===================
 def postprocess_mask(mask_tensor, orig_size):
@@ -719,207 +704,72 @@ mode = st.radio("Select Processing Mode", ["Single Image", "Batch Processing"], 
 # ================= Single Image =================
 if mode == "Single Image":
     st.markdown("---")
-    uploaded_file = st.file_uploader("📤 Upload Your Image", type=["jpg","jpeg","png"], help="Supported formats: JPG, PNG")
+    uploaded_file = st.file_uploader("📤 Upload Your Image", type=["jpg","jpeg","png"])
     
-    if uploaded_file is not None:
+    if uploaded_file:
         img = Image.open(uploaded_file).convert("RGB")
-        img_np = np.array(img)
-        
-        col1, col2, col3 = st.columns([1,2,1])
-        with col2:
-            st.image(img, caption="📷 Uploaded Image", use_container_width=True)
+        img_tensor, orig_size, img_np = preprocess_image(img)
 
-        st.markdown("---")
-        
-        col_btn1, col_btn2, col_btn3 = st.columns([1,1,1])
-        with col_btn2:
-            process_btn = st.button("✨ Process Image", use_container_width=True)
+        st.image(img_np, caption="📷 Uploaded Image", use_container_width=True)
+        process_btn = st.button("✨ Process Image")
         
         if process_btn:
             progress = st.progress(0, text="🔄 Initializing AI model...")
-            
-            with st.spinner("🎨 AI is working its magic..."):
-                for i in range(0,101,20):
-                    if i == 20:
-                        progress.progress(i, text="🔍 Analyzing image...")
-                    elif i == 40:
-                        progress.progress(i, text="🎯 Detecting objects...")
-                    elif i == 60:
-                        progress.progress(i, text="✂️ Segmenting...")
-                    elif i == 80:
-                        progress.progress(i, text="🎨 Refining edges...")
-                    else:
-                        progress.progress(i, text="✅ Finalizing...")
-                    time.sleep(0.2)
+            for i in range(0,101,20):
+                progress.progress(i, text=f"Processing... {i}%")
+                time.sleep(0.2)
 
-                img_tensor, orig_size, _ = preprocess_image(img)
-                mask_tensor = tta_predict(img_tensor,model) if tta_toggle else model(img_tensor)['out']
-                pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
-                for _ in range(dilate_iter):
-                    pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
+            # Prediction
+            mask_tensor = tta_predict(img_tensor, model) if tta_toggle else model(img_tensor)['out']
+            pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
+            for _ in range(dilate_iter):
+                pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
 
-                # Apply artistic effect to the original image
-                if artistic_effect != "None":
-                    img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity)
-                else:
-                    img_np_styled = img_np
+            # Artistic effect
+            img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity) if artistic_effect!="None" else img_np
+            result = extract_object(img_np_styled, pred_mask, bg_color=bg_tuple, transparent=use_transparent, custom_bg=custom_bg, gradient=gradient_colors, bg_blur=bg_blur, blur_amount=blur_amount)
 
-                result = extract_object(img_np_styled, pred_mask, bg_color=bg_tuple, transparent=use_transparent, custom_bg=custom_bg, gradient=gradient_colors, bg_blur=bg_blur, blur_amount=blur_amount)
-                
-                # Create edge overlay if enabled
-                edge_overlay = None
-                if show_edges:
-                    edge_overlay = create_edge_overlay(img_np, pred_mask, edge_color=edge_color, edge_thickness=edge_thickness)
+            # Edge overlay
+            edge_overlay = create_edge_overlay(img_np, pred_mask, edge_color=edge_color, edge_thickness=edge_thickness) if show_edges else None
 
             progress.empty()
             st.success("✅ Segmentation Complete!")
-            st.markdown("---")
 
-            # Update tabs to include edge overlay
-            if show_edges:
-                tabs = st.tabs(["🖼️ Side by Side", "↔️ Interactive Comparison", "✏️ Edge Overlay"])
-            else:
-                tabs = st.tabs(["🖼️ Side by Side", "↔️ Interactive Comparison"])
-            
-            with tabs[0]:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**📷 Original**")
-                    st.image(img_np, use_container_width=True)
-                with col2:
-                    st.markdown("**✨ Segmented**")
-                    st.image(result, use_container_width=True)
-
-                st.markdown("---")
-                st.markdown("### 📥 Download Results")
-                
-                dl_col1, dl_col2 = st.columns(2)
-                with dl_col1:
-                    buf_seg = BytesIO()
-                    Image.fromarray(result).save(buf_seg, format="PNG")
-                    st.download_button("💾 Download Segmented", buf_seg.getvalue(), "segmented_image.png", "image/png", use_container_width=True)
-                
-                with dl_col2:
-                    if use_transparent:
-                        buf_trans = BytesIO()
-                        Image.fromarray(result).save(buf_trans, format="PNG")
-                        st.download_button("💾 Download Transparent", buf_trans.getvalue(), "transparent.png", "image/png", use_container_width=True)
-
-            with tabs[1]:
-                img_small = cv2.resize(img_np, (500, int(500*img_np.shape[0]/img_np.shape[1])))
-                result_bg = extract_object(img_np_styled, pred_mask, bg_color=bg_tuple, transparent=False, custom_bg=custom_bg, gradient=gradient_colors, bg_blur=bg_blur, blur_amount=blur_amount)
-                overlay_small = cv2.resize(result_bg, (500, int(500*result_bg.shape[0]/result_bg.shape[1])))
-                image_comparison(img1=img_small, img2=overlay_small, label1="Original", label2="Segmented")
-            
-            # Edge Overlay Tab
-            if show_edges:
-                with tabs[2]:
-                    st.markdown("**✏️ Edge Boundaries Overlay**")
-                    st.image(edge_overlay, caption="Edges Overlay", use_container_width=True)
-                    
-                    st.markdown("---")
-                    buf_edge = BytesIO()
-                    Image.fromarray(edge_overlay).save(buf_edge, format="PNG")
-                    st.download_button("💾 Download Edge Overlay", buf_edge.getvalue(), "edge_overlay.png", "image/png", use_container_width=True)
+            st.image([img_np, result], caption=["Original", "Segmented"], use_column_width=True)
 
 # ================= Multiple Images =================
 elif mode == "Batch Processing":
     st.markdown("---")
-    uploaded_files = st.file_uploader("📤 Upload Multiple Images", type=["jpg","jpeg","png"], accept_multiple_files=True, help="Process multiple images at once")
+    uploaded_files = st.file_uploader("📤 Upload Multiple Images", type=["jpg","jpeg","png"], accept_multiple_files=True)
     
     if uploaded_files:
         st.markdown(f"### 📸 Uploaded {len(uploaded_files)} images")
-        
-        images = [np.array(Image.open(f).convert("RGB")) for f in uploaded_files]
-        cols = st.columns(min(len(images), 4))
-        for idx, (col, img_np) in enumerate(zip(cols, images[:4])):
-            col.image(img_np, caption=f"Image {idx+1}", use_container_width=True)
-        
-        if len(images) > 4:
-            st.info(f"📋 {len(images)-4} more images ready for processing...")
-
-        st.markdown("---")
-        
-        col_btn1, col_btn2, col_btn3 = st.columns([1,1,1])
-        with col_btn2:
-            process_all = st.button("✨ Process All Images", use_container_width=True)
+        images = [Image.open(f).convert("RGB") for f in uploaded_files]
+        process_all = st.button("✨ Process All Images")
         
         if process_all:
             results = []
-            edge_overlays = []
             progress = st.progress(0, text="🚀 Starting batch processing...")
-            
-            for i, img_np in enumerate(images):
-                progress.progress(int((i)/len(images)*100), text=f"🎨 Processing image {i+1} of {len(images)}...")
-                
-                img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np))
-                mask_tensor = tta_predict(img_tensor,model) if tta_toggle else model(img_tensor)['out']
+            for i, img in enumerate(images):
+                img_tensor, orig_size, img_np = preprocess_image(img)
+                mask_tensor = tta_predict(img_tensor, model) if tta_toggle else model(img_tensor)['out']
                 pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
-                for _ in range(dilate_iter):
-                    pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
-                
-                # Apply artistic effect to the original image
-                if artistic_effect != "None":
-                    img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity)
-                else:
-                    img_np_styled = img_np
-                
-                result = extract_object(img_np_styled, pred_mask, bg_color=bg_tuple, transparent=use_transparent, custom_bg=custom_bg, gradient=gradient_colors, bg_blur=bg_blur, blur_amount=blur_amount)
+                result = extract_object(img_np, pred_mask)
                 results.append(result)
-                
-                # Create edge overlay if enabled
-                if show_edges:
-                    edge_overlay = create_edge_overlay(img_np, pred_mask, edge_color=edge_color, edge_thickness=edge_thickness)
-                    edge_overlays.append(edge_overlay)
-            
-            progress.progress(100, text="✅ All images processed!")
-            time.sleep(0.5)
+                progress.progress(int((i+1)/len(images)*100), text=f"Processing image {i+1}/{len(images)}...")
+
             progress.empty()
-            
             st.success(f"✅ Successfully processed {len(results)} images!")
-            st.markdown("---")
-            st.markdown("### 🎉 Results")
 
-            cols = st.columns(min(len(results), 4))
-            for idx, (col, result) in enumerate(zip(cols, results[:4])):
-                col.image(result, caption=f"Result {idx+1}", use_container_width=True)
-            
-            if len(results) > 4:
-                with st.expander(f"👁️ View all {len(results)} results"):
-                    remaining_cols = st.columns(4)
-                    for idx, result in enumerate(results[4:], 5):
-                        remaining_cols[(idx-5) % 4].image(result, caption=f"Result {idx}", use_container_width=True)
-            
-            # Show edge overlays if enabled
-            if show_edges and edge_overlays:
-                st.markdown("---")
-                st.markdown("### ✏️ Edge Overlays")
-                
-                edge_cols = st.columns(min(len(edge_overlays), 4))
-                for idx, (col, edge_img) in enumerate(zip(edge_cols, edge_overlays[:4])):
-                    col.image(edge_img, caption=f"Edges {idx+1}", use_container_width=True)
-                
-                if len(edge_overlays) > 4:
-                    with st.expander(f"👁️ View all {len(edge_overlays)} edge overlays"):
-                        remaining_edge_cols = st.columns(4)
-                        for idx, edge_img in enumerate(edge_overlays[4:], 5):
-                            remaining_edge_cols[(idx-5) % 4].image(edge_img, caption=f"Edges {idx}", use_container_width=True)
+            for idx, result in enumerate(results):
+                st.image(result, caption=f"Result {idx+1}", use_container_width=True)
 
-            st.markdown("---")
+            # Download all as ZIP
             zip_buffer = BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zip_file:
                 for idx, result in enumerate(results):
                     buf = BytesIO()
                     Image.fromarray(result).save(buf, format="PNG")
                     zip_file.writestr(f"segmented_{idx+1}.png", buf.getvalue())
-                
-                # Add edge overlays to zip if enabled
-                if show_edges and edge_overlays:
-                    for idx, edge_img in enumerate(edge_overlays):
-                        buf = BytesIO()
-                        Image.fromarray(edge_img).save(buf, format="PNG")
-                        zip_file.writestr(f"edge_overlay_{idx+1}.png", buf.getvalue())
-            
-            col_dl1, col_dl2, col_dl3 = st.columns([1,1,1])
-            with col_dl2:
-                st.download_button("📦 Download All as ZIP", zip_buffer.getvalue(), "segmented_images.zip", "application/zip", use_container_width=True)
+
+            st.download_button("📦 Download All as ZIP", zip_buffer.getvalue(), "segmented_images.zip", "application/zip")
