@@ -768,7 +768,7 @@ if mode == "Single Image":
                     time.sleep(0.2)
 
                 img_tensor, orig_size, _ = preprocess_image(img)
-                mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
+                mask_tensor = tta_predict(img_tensor,model) if tta_toggle else model(img_tensor)['out']
                 pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
                 for _ in range(dilate_iter):
                     pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
@@ -868,7 +868,7 @@ elif mode == "Batch Processing":
                 progress.progress(int((i)/len(images)*100), text=f"🎨 Processing image {i+1} of {len(images)}...")
                 
                 img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np))
-                mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
+                mask_tensor = tta_predict(img_tensor,model) if tta_toggle else model(img_tensor)['out']
                 pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
                 for _ in range(dilate_iter):
                     pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
