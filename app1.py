@@ -525,22 +525,20 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
             draw.line(contour_points, fill=edge_color_rgb, width=edge_thickness)
     
     return np.array(overlay_edges)
+# =================== Preprocess Image ===================
+def preprocess_image(img):
+    """Convert PIL image to tensor and resize to multiples of 32."""
+    img_np = np.array(img.convert("RGB"))
+    H, W = img_np.shape[:2]
+    H_new = (H // 32) * 32
+    W_new = (W // 32) * 32
+    img_resized = cv2.resize(img_np, (W_new, H_new))
+    img_tensor = torch.tensor(img_resized.transpose(2,0,1)).unsqueeze(0).float()/255.0
+    return img_tensor, (W, H), img_np  # return original size for postprocessing
 
-# ================= Preprocess =================
-def preprocess_image(img, long_side=256):
-    img = np.array(img)
-    h, w = img.shape[:2]
-    scale = long_side / max(h, w)
-    new_w, new_h = int(w*scale), int(h*scale)
-    img_resized = cv2.resize(img, (new_w, new_h))
-    img_tensor = torch.tensor(img_resized/255., dtype=torch.float32).permute(2,0,1).unsqueeze(0)
-    mean = torch.tensor([0.485,0.456,0.406]).view(1,3,1,1)
-    std = torch.tensor([0.229,0.224,0.225]).view(1,3,1,1)
-    img_tensor = (img_tensor - mean) / std
-    return img_tensor.to(device), (h, w), img
-
-# ================== TTA Function ==================
+# =================== TTA Predict ===================
 def tta_predict(img_tensor, model):
+    """Simple horizontal flip TTA"""
     with torch.no_grad():
         pred1 = model(img_tensor)['out']
         pred2 = model(torch.flip(img_tensor, dims=[3]))['out']
@@ -548,20 +546,25 @@ def tta_predict(img_tensor, model):
         pred = (pred1 + pred2) / 2
     return pred
 
+# =================== Postprocess Mask ===================
+def postprocess_mask(mask_tensor, orig_size):
+    mask_np = mask_tensor.squeeze().numpy()
+    mask_np = cv2.resize(mask_np, orig_size)
+    return (mask_np*255).astype(np.uint8)
 
+# =================== Segmentation Example ===================
+tta_toggle = True  # Set True if you want TTA
 
-# ================= Post-process mask =================
-def postprocess_mask(mask_tensor, orig_size, blur_strength=5):
-    mask = torch.argmax(mask_tensor, dim=1).squeeze().cpu().numpy()
-    mask = cv2.resize(mask.astype(np.uint8), (orig_size[1], orig_size[0]), interpolation=cv2.INTER_NEAREST)
-    kernel = np.ones((3,3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.dilate(mask, kernel, iterations=1)
-    mask = mask.astype(np.uint8) * 255
-    blurred = cv2.GaussianBlur(mask, (blur_strength, blur_strength), 0)
-    _, smooth_mask = cv2.threshold(blurred, 128, 255, cv2.THRESH_BINARY)
-    return (smooth_mask // 255).astype(np.uint8)
+img_tensor, orig_size, img_np = preprocess_image(img)
+
+if tta_toggle:
+    mask_tensor = tta_predict(img_tensor, model)
+else:
+    with torch.no_grad():
+        mask_tensor = model(img_tensor)['out']
+
+pred_mask = postprocess_mask(mask_tensor, orig_size)
+
 
 # ================= Extract Object =================
 def extract_object(img, mask, bg_color=(0,0,0), transparent=False, custom_bg=None, gradient=None, bg_blur=False, blur_amount=21):
