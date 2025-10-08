@@ -255,29 +255,22 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
 import torch
 
 def preprocess_image(img, long_side=256, min_size=32):
-    """
-    Resize image so the longest side is `long_side` while maintaining aspect ratio.
-    Ensures both height and width are at least `min_size` to avoid DeepLabV3+ errors.
-    """
     img = np.array(img)
     h, w = img.shape[:2]
-
-    # Compute scaling factor
     scale = long_side / max(h, w)
-    new_w, new_h = max(int(w*scale), min_size), max(int(h*scale), min_size)
-
+    new_w, new_h = int(w*scale), int(h*scale)
+    
+    # Ensure minimum size
+    new_w = max(new_w, min_size)
+    new_h = max(new_h, min_size)
+    
     img_resized = cv2.resize(img, (new_w, new_h))
     img_tensor = torch.tensor(img_resized/255., dtype=torch.float32).permute(2,0,1).unsqueeze(0)
-    
-    # Normalize
     mean = torch.tensor([0.485,0.456,0.406]).view(1,3,1,1)
     std = torch.tensor([0.229,0.224,0.225]).view(1,3,1,1)
     img_tensor = (img_tensor - mean) / std
-
-    # Ensure tensor is 4D
-    assert img_tensor.ndim == 4, f"Expected 4D tensor, got {img_tensor.ndim}D"
-
     return img_tensor.to(device), (h, w), img
+
 
 
 def tta_predict(img_tensor):
@@ -446,7 +439,8 @@ if mode == "Single Image":
 
 
 
-            img_tensor, orig_size, _ = preprocess_image(img)
+            img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np), long_side=256, min_size=32)
+
             mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
             pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
             for _ in range(dilate_iter):
@@ -526,6 +520,7 @@ elif mode == "Batch Processing":
 
                 # Preprocess image with minimum size to avoid model errors
                 img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np), long_side=256, min_size=32)
+
 
                 # Prediction with or without TTA
                 mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
