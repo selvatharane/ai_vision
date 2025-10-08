@@ -1,8 +1,0 @@
-streamlit
-torch
-torchvision
-segmentation-models-pytorch
-opencv-python-headless
-Pillow
-scikit-image
-streamlit-image-comparison
