@@ -139,7 +139,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 @st.cache_resource
 def load_model():
     model = smp.DeepLabV3Plus(encoder_name="resnet34", encoder_weights=None, classes=1, activation=None)
-    model.load_state_dict(torch.load("final_deeplab.pth", map_location=device))
+    model.load_state_dict(torch.load("best_deeplab.pth", map_location=device))
     model.to(device)
     model.eval()
     return model
