@@ -254,64 +254,72 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
 # =========================
 import torch
 
-def preprocess_image(img, long_side=256, min_size=32):
-    """Resize and pad image so height and width are divisible by 16"""
-    img = np.array(img)
-    h, w = img.shape[:2]
+def preprocess_image(img: Image.Image, long_side: int = 512, min_size: int = 32, pad_to_divisible: int = 16):
+    """
+    Preprocess image for segmentation:
+    - Resize while keeping aspect ratio
+    - Pad so height and width are divisible by `pad_to_divisible`
+    - Convert to tensor and normalize
+    """
+    import torch
+    import torchvision.transforms as T
+    import numpy as np
+
+    # Resize while keeping aspect ratio
+    w, h = img.size
     scale = long_side / max(h, w)
-    new_w, new_h = int(w*scale), int(h*scale)
+    new_w, new_h = max(int(w * scale), min_size), max(int(h * scale), min_size)
+    img_resized = img.resize((new_w, new_h))
 
-    # Ensure minimum size
-    new_w = max(new_w, min_size)
-    new_h = max(new_h, min_size)
-
-    # Resize image
-    img_resized = cv2.resize(img, (new_w, new_h))
-
-    # Pad to make divisible by 16
-    pad_h = (16 - new_h % 16) % 16
-    pad_w = (16 - new_w % 16) % 16
-    img_padded = cv2.copyMakeBorder(img_resized, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+    # Pad to make divisible by pad_to_divisible
+    pad_w = (pad_to_divisible - new_w % pad_to_divisible) % pad_to_divisible
+    pad_h = (pad_to_divisible - new_h % pad_to_divisible) % pad_to_divisible
+    img_padded = Image.new("RGB", (new_w + pad_w, new_h + pad_h), (0,0,0))
+    img_padded.paste(img_resized, (0,0))
 
     # Convert to tensor
-    img_tensor = torch.tensor(img_padded / 255., dtype=torch.float32).permute(2,0,1).unsqueeze(0)
-    mean = torch.tensor([0.485,0.456,0.406]).view(1,3,1,1)
-    std = torch.tensor([0.229,0.224,0.225]).view(1,3,1,1)
-    img_tensor = (img_tensor - mean) / std
+    transform = T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    img_tensor = transform(img_padded).unsqueeze(0)  # Add batch dimension
 
-    return img_tensor.to(device), (h, w), img
+    return img_tensor, (new_h, new_w), np.array(img_padded)
 
 
+def tta_predict(img_tensor: torch.Tensor):
+    """
+    Test-Time Augmentation (TTA) for a single image tensor.
+    Applies horizontal/vertical flips and rotations, averages the predictions.
+    """
+    import torch
+    import torch.nn.functional as F
 
+    device = next(model.parameters()).device
+    img_tensor = img_tensor.to(device)
+    tta_transforms = [
+        lambda x: x,                             # original
+        lambda x: torch.flip(x, [-1]),           # horizontal flip
+        lambda x: torch.flip(x, [-2]),           # vertical flip
+        lambda x: torch.rot90(x, 1, [-2,-1]),    # rotate 90
+    ]
 
-def tta_predict(img_tensor):
-    """Perform Test-Time Augmentation (horizontal & vertical flips)"""
-    t = img_tensor
-    flips = [None, "h", "v", "hv"]
-    outputs = []
-
-    for f in flips:
-        if f == "h":
-            t_flip = torch.flip(t, [-1])
-        elif f == "v":
-            t_flip = torch.flip(t, [-2])
-        elif f == "hv":
-            t_flip = torch.flip(t, [-2, -1])
-        else:
-            t_flip = t
-
-        out = model(t_flip)['out']
-
-        if f == "h":
+    preds = []
+    for t in tta_transforms:
+        out = model(t(img_tensor))['out']
+        # Inverse transforms to align back
+        if t == tta_transforms[1]:       # horizontal flip
             out = torch.flip(out, [-1])
-        elif f == "v":
+        elif t == tta_transforms[2]:     # vertical flip
             out = torch.flip(out, [-2])
-        elif f == "hv":
-            out = torch.flip(out, [-2, -1])
+        elif t == tta_transforms[3]:     # 90 deg rotation
+            out = torch.rot90(out, -1, [-2,-1])
+        preds.append(out)
 
-        outputs.append(out)
+    # Average predictions
+    pred = torch.stack(preds, dim=0).mean(dim=0)
+    return pred
 
-    return torch.stack(outputs).mean(0)
 
 
 def postprocess_mask(mask_tensor, orig_size, blur_strength=5):
