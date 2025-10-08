@@ -255,44 +255,64 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
 import torch
 
 def preprocess_image(img, long_side=256, min_size=32):
+    """Resize and pad image so height and width are divisible by 16"""
     img = np.array(img)
     h, w = img.shape[:2]
     scale = long_side / max(h, w)
     new_w, new_h = int(w*scale), int(h*scale)
-    
+
     # Ensure minimum size
     new_w = max(new_w, min_size)
     new_h = max(new_h, min_size)
-    
+
+    # Resize image
     img_resized = cv2.resize(img, (new_w, new_h))
-    img_tensor = torch.tensor(img_resized/255., dtype=torch.float32).permute(2,0,1).unsqueeze(0)
+
+    # Pad to make divisible by 16
+    pad_h = (16 - new_h % 16) % 16
+    pad_w = (16 - new_w % 16) % 16
+    img_padded = cv2.copyMakeBorder(img_resized, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT)
+
+    # Convert to tensor
+    img_tensor = torch.tensor(img_padded / 255., dtype=torch.float32).permute(2,0,1).unsqueeze(0)
     mean = torch.tensor([0.485,0.456,0.406]).view(1,3,1,1)
     std = torch.tensor([0.229,0.224,0.225]).view(1,3,1,1)
     img_tensor = (img_tensor - mean) / std
+
     return img_tensor.to(device), (h, w), img
 
 
 
+
 def tta_predict(img_tensor):
-    aug_list = [
-        lambda x: x,
-        lambda x: torch.flip(x, [3]),
-        lambda x: torch.flip(x, [2]),
-        lambda x: torch.rot90(x, k=1, dims=[2,3]),
-        lambda x: torch.rot90(x, k=3, dims=[2,3])
-    ]
+    """Perform Test-Time Augmentation (horizontal & vertical flips)"""
+    t = img_tensor
+    flips = [None, "h", "v", "hv"]
     outputs = []
-    with torch.no_grad():
-        for f in aug_list:
-            t = f(img_tensor)
-            out = model(t)['out']
-            if f != aug_list[0]:
-                if f == aug_list[1]: out = torch.flip(out,[3])
-                elif f == aug_list[2]: out = torch.flip(out,[2])
-                elif f == aug_list[3]: out = torch.rot90(out,k=3,dims=[2,3])
-                elif f == aug_list[4]: out = torch.rot90(out,k=1,dims=[2,3])
-            outputs.append(out)
-    return torch.mean(torch.stack(outputs), dim=0)
+
+    for f in flips:
+        if f == "h":
+            t_flip = torch.flip(t, [-1])
+        elif f == "v":
+            t_flip = torch.flip(t, [-2])
+        elif f == "hv":
+            t_flip = torch.flip(t, [-2, -1])
+        else:
+            t_flip = t
+
+        out = model(t_flip)['out']
+
+        if f == "h":
+            out = torch.flip(out, [-1])
+        elif f == "v":
+            out = torch.flip(out, [-2])
+        elif f == "hv":
+            out = torch.flip(out, [-2, -1])
+
+        outputs.append(out)
+
+    return torch.stack(outputs).mean(0)
+
 
 def postprocess_mask(mask_tensor, orig_size, blur_strength=5):
     mask = torch.argmax(mask_tensor, dim=1).squeeze().cpu().numpy()
@@ -422,34 +442,53 @@ if mode == "Single Image":
 
         process_btn = st.button("✨ Process Image", use_container_width=True)
         if process_btn:
+            # Progress messages
             progress = st.progress(0, text="🔄 Initializing AI model...")
             msgs = [
-              "🔄 Initializing AI model...",
-              "🔍 Analyzing image...",
-              "🎯 Detecting objects...",
-              "✂️ Segmenting...",
-              "🎨 Refining edges...",
-              "✅ Finalizing..."
+                "🔄 Initializing AI model...",
+                "🔍 Analyzing image...",
+                "🎯 Detecting objects...",
+                "✂️ Segmenting...",
+                "🎨 Refining edges...",
+                "✅ Finalizing..."
             ]
-
             for i in range(0, 101, 20):
-              idx = min(i // 20, len(msgs) - 1)  # safe index
-              progress.progress(i, text=msgs[idx])
-              time.sleep(0.2)
+                idx = min(i // 20, len(msgs) - 1)  # safe index
+                progress.progress(i, text=msgs[idx])
+                time.sleep(0.2)
 
+            # Preprocess image: pad/resize so height & width divisible by 16
+            img_tensor, orig_size, _ = preprocess_image(
+                Image.fromarray(img_np),
+                pad_to_divisible=16  # <-- ensure SMP compatibility
+            )
 
-
-            img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np), long_side=256, min_size=32)
-
+            # Prediction with or without TTA
             mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
+
+            # Postprocess mask
             pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
             for _ in range(dilate_iter):
-                pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
+                pred_mask = cv2.dilate(pred_mask, np.ones((3,3), np.uint8), iterations=1)
 
+            # Apply artistic effect if selected
             img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity) if artistic_effect != "None" else img_np
-            result = extract_object(img_np_styled, pred_mask, bg_color=bg_tuple, transparent=use_transparent, custom_bg=custom_bg, gradient=gradient_colors, bg_blur=bg_blur, blur_amount=blur_amount)
+
+            # Extract object
+            result = extract_object(
+                img_np_styled, pred_mask,
+                bg_color=bg_tuple,
+                transparent=use_transparent,
+                custom_bg=custom_bg,
+                gradient=gradient_colors,
+                bg_blur=bg_blur,
+                blur_amount=blur_amount
+            )
+
+            # Edge overlay if enabled
             edge_overlay = create_edge_overlay(img_np, pred_mask, edge_color=edge_color, edge_thickness=edge_thickness) if show_edges else None
 
+            progress.progress(100, text="✅ Segmentation Complete!")
             st.success("✅ Segmentation Complete!")
             st.markdown("---")
 
@@ -462,7 +501,7 @@ if mode == "Single Image":
                 with col2: st.image(result, caption="✨ Segmented", use_container_width=True)
 
             with tabs[1]:
-                # Example: comparison (can integrate image_comparison if available)
+                # Interactive comparison (can use your existing image_comparison function)
                 st.image(result, caption="↔️ Segmented vs Original", use_container_width=True)
 
             if show_edges and edge_overlay is not None:
@@ -473,6 +512,7 @@ if mode == "Single Image":
             buf_seg = BytesIO()
             Image.fromarray(result).save(buf_seg, format="PNG")
             st.download_button("💾 Download Segmented", buf_seg.getvalue(), "segmented_image.png", "image/png")
+            
             if show_edges and edge_overlay is not None:
                 buf_edge = BytesIO()
                 Image.fromarray(edge_overlay).save(buf_edge, format="PNG")
@@ -518,9 +558,11 @@ elif mode == "Batch Processing":
                     )
                     time.sleep(0.05)  # adjust speed if needed
 
-                # Preprocess image with minimum size to avoid model errors
-                img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np), long_side=256, min_size=32)
-
+                # Preprocess image: resize/pad to multiples of 16 to avoid SMP errors
+                img_tensor, orig_size, _ = preprocess_image(
+                    Image.fromarray(img_np),
+                    pad_to_divisible=16  # <-- pad function should handle this
+                )
 
                 # Prediction with or without TTA
                 mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
@@ -593,3 +635,4 @@ elif mode == "Batch Processing":
                         zip_file.writestr(f"edge_overlay_{idx+1}.png", buf.getvalue())
 
             st.download_button("📦 Download All as ZIP", zip_buffer.getvalue(), "segmented_images.zip", "application/zip", use_container_width=True)
+
