@@ -254,17 +254,31 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
 # =========================
 import torch
 
-def preprocess_image(img, long_side=256):
+def preprocess_image(img, long_side=256, min_size=32):
+    """
+    Resize image so the longest side is `long_side` while maintaining aspect ratio.
+    Ensures both height and width are at least `min_size` to avoid DeepLabV3+ errors.
+    """
     img = np.array(img)
     h, w = img.shape[:2]
+
+    # Compute scaling factor
     scale = long_side / max(h, w)
-    new_w, new_h = int(w*scale), int(h*scale)
+    new_w, new_h = max(int(w*scale), min_size), max(int(h*scale), min_size)
+
     img_resized = cv2.resize(img, (new_w, new_h))
     img_tensor = torch.tensor(img_resized/255., dtype=torch.float32).permute(2,0,1).unsqueeze(0)
+    
+    # Normalize
     mean = torch.tensor([0.485,0.456,0.406]).view(1,3,1,1)
     std = torch.tensor([0.229,0.224,0.225]).view(1,3,1,1)
     img_tensor = (img_tensor - mean) / std
+
+    # Ensure tensor is 4D
+    assert img_tensor.ndim == 4, f"Expected 4D tensor, got {img_tensor.ndim}D"
+
     return img_tensor.to(device), (h, w), img
+
 
 def tta_predict(img_tensor):
     aug_list = [
@@ -477,46 +491,56 @@ elif mode == "Batch Processing":
     st.markdown("---")
     uploaded_files = st.file_uploader(
         "📤 Upload Multiple Images",
-        type=["jpg", "jpeg", "png"],
+        type=["jpg","jpeg","png"],
         accept_multiple_files=True
     )
     
     if uploaded_files:
         images = [np.array(Image.open(f).convert("RGB")) for f in uploaded_files]
         st.markdown(f"### 📸 Uploaded {len(images)} images")
-        
+
         process_all = st.button("✨ Process All Images", use_container_width=True)
-        
+
         if process_all:
-            results = []
-            edge_overlays = []
+            results, edge_overlays = [], []
             progress = st.progress(0, text="🚀 Starting batch processing...")
-            
+
+            msgs = [
+                "🔄 Initializing AI model...",
+                "🔍 Analyzing image...",
+                "🎯 Detecting objects...",
+                "✂️ Segmenting...",
+                "🎨 Refining edges...",
+                "✅ Finalizing..."
+            ]
+
             for i, img_np in enumerate(images):
-                progress.progress(
-                    int(i / len(images) * 100),
-                    text=f"🎨 Processing image {i+1} of {len(images)}..."
-                )
-                
-                # Preprocess
-                img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np))
-                
-                # Mask prediction (TTA if enabled)
+                # Update progress with descriptive messages
+                for j, p in enumerate(range(0, 101, 20)):
+                    idx = min(j, len(msgs)-1)
+                    progress.progress(
+                        int((i + p/100)/len(images)*100),
+                        text=f"Image {i+1}: {msgs[idx]}"
+                    )
+                    time.sleep(0.05)  # adjust speed if needed
+
+                # Preprocess image with minimum size to avoid model errors
+                img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np), long_side=256, min_size=32)
+
+                # Prediction with or without TTA
                 mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
-                
-                # Post-process mask
+
+                # Postprocess mask
                 pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
                 for _ in range(dilate_iter):
                     pred_mask = cv2.dilate(pred_mask, np.ones((3,3), np.uint8), iterations=1)
-                
+
                 # Apply artistic effect if selected
-                img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity) \
-                    if artistic_effect != "None" else img_np
-                
-                # Extract object
+                img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity) if artistic_effect != "None" else img_np
+
+                # Extract object with selected background options
                 result = extract_object(
-                    img_np_styled,
-                    pred_mask,
+                    img_np_styled, pred_mask,
                     bg_color=bg_tuple,
                     transparent=use_transparent,
                     custom_bg=custom_bg,
@@ -525,42 +549,52 @@ elif mode == "Batch Processing":
                     blur_amount=blur_amount
                 )
                 results.append(result)
-                
-                # Edge overlay
+
+                # Create edge overlay if enabled
                 if show_edges:
-                    edge_overlay = create_edge_overlay(
-                        img_np, pred_mask,
-                        edge_color=edge_color,
-                        edge_thickness=edge_thickness
-                    )
+                    edge_overlay = create_edge_overlay(img_np, pred_mask, edge_color=edge_color, edge_thickness=edge_thickness)
                     edge_overlays.append(edge_overlay)
-            
+
             progress.progress(100, text="✅ All images processed!")
             st.success(f"✅ Successfully processed {len(results)} images!")
-            
-            # Display first 4 results
+            st.markdown("---")
+
+            # Display first few results
             cols = st.columns(min(len(results), 4))
             for idx, (col, result) in enumerate(zip(cols, results[:4])):
                 col.image(result, caption=f"Result {idx+1}", use_container_width=True)
-            
-            # ZIP download for all results
+
+            # Show remaining results if more than 4
+            if len(results) > 4:
+                with st.expander(f"👁️ View all {len(results)} results"):
+                    remaining_cols = st.columns(4)
+                    for idx, result in enumerate(results[4:], 5):
+                        remaining_cols[(idx-5) % 4].image(result, caption=f"Result {idx}", use_container_width=True)
+
+            # Show edge overlays if enabled
+            if show_edges and edge_overlays:
+                st.markdown("---")
+                st.markdown("### ✏️ Edge Overlays")
+                edge_cols = st.columns(min(len(edge_overlays), 4))
+                for idx, (col, edge_img) in enumerate(zip(edge_cols, edge_overlays[:4])):
+                    col.image(edge_img, caption=f"Edges {idx+1}", use_container_width=True)
+                if len(edge_overlays) > 4:
+                    with st.expander(f"👁️ View all {len(edge_overlays)} edge overlays"):
+                        remaining_edge_cols = st.columns(4)
+                        for idx, edge_img in enumerate(edge_overlays[4:], 5):
+                            remaining_edge_cols[(idx-5) % 4].image(edge_img, caption=f"Edges {idx}", use_container_width=True)
+
+            # ZIP download
             zip_buffer = BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zip_file:
                 for idx, result in enumerate(results):
                     buf = BytesIO()
                     Image.fromarray(result).save(buf, format="PNG")
                     zip_file.writestr(f"segmented_{idx+1}.png", buf.getvalue())
-                
                 if show_edges and edge_overlays:
                     for idx, edge_img in enumerate(edge_overlays):
                         buf = BytesIO()
                         Image.fromarray(edge_img).save(buf, format="PNG")
                         zip_file.writestr(f"edge_overlay_{idx+1}.png", buf.getvalue())
-            
-            st.download_button(
-                "📦 Download All as ZIP",
-                zip_buffer.getvalue(),
-                "segmented_images.zip",
-                "application/zip",
-                use_container_width=True
-            )
+
+            st.download_button("📦 Download All as ZIP", zip_buffer.getvalue(), "segmented_images.zip", "application/zip", use_container_width=True)
