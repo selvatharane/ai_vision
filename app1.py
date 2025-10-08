@@ -416,10 +416,21 @@ if mode == "Single Image":
         process_btn = st.button("✨ Process Image", use_container_width=True)
         if process_btn:
             progress = st.progress(0, text="🔄 Initializing AI model...")
-            for i in range(0,101,20):
-                msgs = ["🔄 Initializing AI model...", "🔍 Analyzing image...", "🎯 Detecting objects...", "✂️ Segmenting...", "🎨 Refining edges..."]
-                progress.progress(i, text=msgs[i//20])
-                time.sleep(0.2)
+            msgs = [
+              "🔄 Initializing AI model...",
+              "🔍 Analyzing image...",
+              "🎯 Detecting objects...",
+              "✂️ Segmenting...",
+              "🎨 Refining edges...",
+              "✅ Finalizing..."
+            ]
+
+            for i in range(0, 101, 20):
+              idx = min(i // 20, len(msgs) - 1)  # safe index
+              progress.progress(i, text=msgs[idx])
+              time.sleep(0.2)
+
+
 
             img_tensor, orig_size, _ = preprocess_image(img)
             mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
@@ -464,50 +475,92 @@ if mode == "Single Image":
 # =========================
 elif mode == "Batch Processing":
     st.markdown("---")
-    uploaded_files = st.file_uploader("📤 Upload Multiple Images", type=["jpg","jpeg","png"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+        "📤 Upload Multiple Images",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
     
     if uploaded_files:
         images = [np.array(Image.open(f).convert("RGB")) for f in uploaded_files]
         st.markdown(f"### 📸 Uploaded {len(images)} images")
-        for idx, img_np in enumerate(images[:4]):
-            st.image(img_np, caption=f"Image {idx+1}", use_container_width=True)
-
+        
         process_all = st.button("✨ Process All Images", use_container_width=True)
+        
         if process_all:
-            results, edge_overlays = [], []
+            results = []
+            edge_overlays = []
             progress = st.progress(0, text="🚀 Starting batch processing...")
+            
             for i, img_np in enumerate(images):
-                progress.progress(int(i/len(images)*100), text=f"🎨 Processing image {i+1} of {len(images)}...")
+                progress.progress(
+                    int(i / len(images) * 100),
+                    text=f"🎨 Processing image {i+1} of {len(images)}..."
+                )
+                
+                # Preprocess
                 img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np))
+                
+                # Mask prediction (TTA if enabled)
                 mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
+                
+                # Post-process mask
                 pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
                 for _ in range(dilate_iter):
-                    pred_mask = cv2.dilate(pred_mask, np.ones((3,3),np.uint8), iterations=1)
-
-                img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity) if artistic_effect != "None" else img_np
-                result = extract_object(img_np_styled, pred_mask, bg_color=bg_tuple, transparent=use_transparent, custom_bg=custom_bg, gradient=gradient_colors, bg_blur=bg_blur, blur_amount=blur_amount)
+                    pred_mask = cv2.dilate(pred_mask, np.ones((3,3), np.uint8), iterations=1)
+                
+                # Apply artistic effect if selected
+                img_np_styled = apply_artistic_effect(img_np, artistic_effect, effect_intensity) \
+                    if artistic_effect != "None" else img_np
+                
+                # Extract object
+                result = extract_object(
+                    img_np_styled,
+                    pred_mask,
+                    bg_color=bg_tuple,
+                    transparent=use_transparent,
+                    custom_bg=custom_bg,
+                    gradient=gradient_colors,
+                    bg_blur=bg_blur,
+                    blur_amount=blur_amount
+                )
                 results.append(result)
+                
+                # Edge overlay
                 if show_edges:
-                    edge_overlay = create_edge_overlay(img_np, pred_mask, edge_color=edge_color, edge_thickness=edge_thickness)
+                    edge_overlay = create_edge_overlay(
+                        img_np, pred_mask,
+                        edge_color=edge_color,
+                        edge_thickness=edge_thickness
+                    )
                     edge_overlays.append(edge_overlay)
             
             progress.progress(100, text="✅ All images processed!")
             st.success(f"✅ Successfully processed {len(results)} images!")
-
-            # Display first few results
-            for idx, result in enumerate(results[:4]):
-                st.image(result, caption=f"Result {idx+1}", use_container_width=True)
-
-            # ZIP download
+            
+            # Display first 4 results
+            cols = st.columns(min(len(results), 4))
+            for idx, (col, result) in enumerate(zip(cols, results[:4])):
+                col.image(result, caption=f"Result {idx+1}", use_container_width=True)
+            
+            # ZIP download for all results
             zip_buffer = BytesIO()
             with zipfile.ZipFile(zip_buffer, "w") as zip_file:
                 for idx, result in enumerate(results):
                     buf = BytesIO()
                     Image.fromarray(result).save(buf, format="PNG")
                     zip_file.writestr(f"segmented_{idx+1}.png", buf.getvalue())
+                
                 if show_edges and edge_overlays:
                     for idx, edge_img in enumerate(edge_overlays):
                         buf = BytesIO()
                         Image.fromarray(edge_img).save(buf, format="PNG")
                         zip_file.writestr(f"edge_overlay_{idx+1}.png", buf.getvalue())
-            st.download_button("📦 Download All as ZIP", zip_buffer.getvalue(), "segmented_images.zip", "application/zip", use_container_width=True)
+            
+            st.download_button(
+                "📦 Download All as ZIP",
+                zip_buffer.getvalue(),
+                "segmented_images.zip",
+                "application/zip",
+                use_container_width=True
+            )
