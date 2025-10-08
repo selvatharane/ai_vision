@@ -289,36 +289,34 @@ def preprocess_image(img: Image.Image, long_side: int = 512, min_size: int = 32,
 
 def tta_predict(img_tensor: torch.Tensor):
     """
-    Test-Time Augmentation (TTA) for a single image tensor.
-    Applies horizontal/vertical flips and rotations, averages the predictions.
+    Test-Time Augmentation (TTA) for SMP model.
+    Expects img_tensor with shape (1, C, H, W) and device matching the model.
+    Returns averaged prediction.
     """
-    import torch
-    import torch.nn.functional as F
-
     device = next(model.parameters()).device
     img_tensor = img_tensor.to(device)
-    tta_transforms = [
-        lambda x: x,                             # original
-        lambda x: torch.flip(x, [-1]),           # horizontal flip
-        lambda x: torch.flip(x, [-2]),           # vertical flip
-        lambda x: torch.rot90(x, 1, [-2,-1]),    # rotate 90
-    ]
 
     preds = []
-    for t in tta_transforms:
-        out = model(t(img_tensor))['out']
-        # Inverse transforms to align back
-        if t == tta_transforms[1]:       # horizontal flip
-            out = torch.flip(out, [-1])
-        elif t == tta_transforms[2]:     # vertical flip
-            out = torch.flip(out, [-2])
-        elif t == tta_transforms[3]:     # 90 deg rotation
-            out = torch.rot90(out, -1, [-2,-1])
-        preds.append(out)
 
-    # Average predictions
+    # Original
+    preds.append(model(img_tensor)['out'])
+
+    # Horizontal flip
+    h_flip = torch.flip(img_tensor, dims=[-1])
+    preds.append(torch.flip(model(h_flip)['out'], dims=[-1]))
+
+    # Vertical flip
+    v_flip = torch.flip(img_tensor, dims=[-2])
+    preds.append(torch.flip(model(v_flip)['out'], dims=[-2]))
+
+    # Rotate 90
+    rot = torch.rot90(img_tensor, k=1, dims=[-2, -1])
+    preds.append(torch.rot90(model(rot)['out'], k=-1, dims=[-2, -1]))
+
+    # Average all predictions
     pred = torch.stack(preds, dim=0).mean(dim=0)
     return pred
+
 
 
 
