@@ -254,47 +254,36 @@ def create_edge_overlay(image, mask, edge_color="#00FF00", edge_thickness=2):
 # =========================
 import torch
 
-def preprocess_image(img: Image.Image, long_side: int = 512, min_size: int = 32, pad_to_divisible: int = 16):
+def preprocess_image(img: Image.Image, long_side=512, pad_to_divisible=16):
     """
-    Preprocess image for segmentation:
-    - Resize while keeping aspect ratio
-    - Pad so height and width are divisible by `pad_to_divisible`
-    - Convert to tensor and normalize
+    Preprocess image for SMP model:
+    - Resize to long_side keeping aspect ratio
+    - Pad to make height and width divisible by pad_to_divisible
+    - Convert to float32 tensor with shape (1, 3, H, W)
     """
-    import torch
-    import torchvision.transforms as T
-    import numpy as np
-
-    # Resize while keeping aspect ratio
-    w, h = img.size
+    img = np.array(img.convert("RGB"))
+    h, w = img.shape[:2]
     scale = long_side / max(h, w)
-    new_w, new_h = max(int(w * scale), min_size), max(int(h * scale), min_size)
-    img_resized = img.resize((new_w, new_h))
+    new_h, new_w = int(h * scale), int(w * scale)
 
     # Pad to make divisible by pad_to_divisible
-    pad_w = (pad_to_divisible - new_w % pad_to_divisible) % pad_to_divisible
     pad_h = (pad_to_divisible - new_h % pad_to_divisible) % pad_to_divisible
-    img_padded = Image.new("RGB", (new_w + pad_w, new_h + pad_h), (0,0,0))
-    img_padded.paste(img_resized, (0,0))
+    pad_w = (pad_to_divisible - new_w % pad_to_divisible) % pad_to_divisible
 
-    # Convert to tensor
-    transform = T.Compose([
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    img_tensor = transform(img_padded).unsqueeze(0)  # Add batch dimension
+    resized = cv2.resize(img, (new_w, new_h))
+    padded = cv2.copyMakeBorder(resized, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0)
 
-    return img_tensor, (new_h, new_w), np.array(img_padded)
-
+    tensor = torch.from_numpy(padded).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+    return tensor, (h, w), padded
 
 def tta_predict(img_tensor: torch.Tensor):
     """
     Test-Time Augmentation (TTA) for SMP model.
-    Expects img_tensor with shape (1, C, H, W) and device matching the model.
-    Returns averaged prediction.
+    Expects img_tensor shape (1, C, H, W), dtype float32, device same as model.
+    Returns averaged prediction tensor.
     """
     device = next(model.parameters()).device
-    img_tensor = img_tensor.to(device)
+    img_tensor = img_tensor.to(device, dtype=torch.float32)
 
     preds = []
 
@@ -316,6 +305,7 @@ def tta_predict(img_tensor: torch.Tensor):
     # Average all predictions
     pred = torch.stack(preds, dim=0).mean(dim=0)
     return pred
+
 
 
 
@@ -463,14 +453,9 @@ if mode == "Single Image":
                 progress.progress(i, text=msgs[idx])
                 time.sleep(0.2)
 
-            # Preprocess image: pad/resize so height & width divisible by 16
-            img_tensor, orig_size, _ = preprocess_image(
-                Image.fromarray(img_np),
-                pad_to_divisible=16  # <-- ensure SMP compatibility
-            )
-
-            # Prediction with or without TTA
+            img_tensor, orig_size, _ = preprocess_image(img, long_side=512, pad_to_divisible=16)
             mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
+
 
             # Postprocess mask
             pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
@@ -564,14 +549,9 @@ elif mode == "Batch Processing":
                     )
                     time.sleep(0.05)  # adjust speed if needed
 
-                # Preprocess image: resize/pad to multiples of 16 to avoid SMP errors
-                img_tensor, orig_size, _ = preprocess_image(
-                    Image.fromarray(img_np),
-                    pad_to_divisible=16  # <-- pad function should handle this
-                )
-
-                # Prediction with or without TTA
+                img_tensor, orig_size, _ = preprocess_image(Image.fromarray(img_np), long_side=512, pad_to_divisible=16)
                 mask_tensor = tta_predict(img_tensor) if tta_toggle else model(img_tensor)['out']
+
 
                 # Postprocess mask
                 pred_mask = postprocess_mask(mask_tensor, orig_size, blur_strength=blur_strength)
